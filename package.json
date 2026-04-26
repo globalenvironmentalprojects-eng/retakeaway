@@ -22,5 +22,8 @@
     "@types/react-dom": "^18",
     "@types/uuid": "^9",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
