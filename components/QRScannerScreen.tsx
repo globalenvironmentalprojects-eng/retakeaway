@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import jsQR from 'jsqr'
 
 const G = {
   brand: '#2E7D52', bright: '#3A9E65', pale: '#A8D8BB',
@@ -74,18 +75,14 @@ export default function QRScannerScreen({ modo, onCancel, onResult, loading, err
     ctx.drawImage(video, 0, 0)
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
 
-    // jsQR se carga via script tag en el layout; accedemos por window
-    const jsQR = (window as any).jsQR
-    if (jsQR) {
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: 'dontInvert'
-      })
-      if (code?.data) {
+    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'dontInvert'
+    })
+    if (code?.data) {
         setEscaneado(true)
         stopCamera()
         setTimeout(() => onResult(code.data), 400)
         return
-      }
     }
     rafRef.current = requestAnimationFrame(scanLoop)
   }
@@ -103,9 +100,6 @@ export default function QRScannerScreen({ modo, onCancel, onResult, loading, err
 
   return (
     <>
-      {/* jsQR library */}
-      <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" async />
-
       <div style={{
         position: 'fixed', inset: 0, background: '#0A1A0F', zIndex: 900,
         display: 'flex', flexDirection: 'column', overflowY: 'auto'
