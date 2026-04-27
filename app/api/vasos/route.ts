@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { adminDb } from '@/lib/firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
+import { enviarEmailAccion } from '@/lib/email'
 
 // GET /api/vasos?estacion_id=xxx  → listar vasos de una estación
 // GET /api/vasos?qr=RTA-001       → buscar vaso por código QR
@@ -44,7 +45,7 @@ export async function GET(req: NextRequest) {
 // accion: 'recoger' | 'devolver' | 'marcar_lavado'
 export async function POST(req: NextRequest) {
   try {
-    const { accion, vaso_id, usuario_id, estacion_id } = await req.json()
+    const { accion, vaso_id, usuario_id, estacion_id, nuevo_estado } = await req.json()
 
     if (!accion || !vaso_id) {
       return NextResponse.json({ error: 'Faltan campos requeridos' }, { status: 400 })
@@ -104,6 +105,19 @@ export async function POST(req: NextRequest) {
       })
 
       await batch.commit()
+
+      // Enviar email de confirmación (sin await para no bloquear la respuesta)
+      const fechaStr = new Date().toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })
+      enviarEmailAccion({
+        to: 'jcarranzsualdea@gmail.com',
+        nombre: usuario.nombre,
+        accion: 'recogida',
+        vaso_codigo: vaso.codigo_qr,
+        estacion_nombre: vaso.estacion_nombre,
+        puntos_restantes: usuario.puntos - 50,
+        fecha: fechaStr,
+      })
+
       return NextResponse.json({ ok: true, puntos_nuevos: usuario.puntos - 50 })
     }
 
@@ -113,10 +127,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'El vaso no está en uso' }, { status: 409 })
       }
 
-      const titular_id = vaso.usuario_id
+      const titular_id     = vaso.usuario_id
       const titular_nombre = vaso.usuario_nombre
 
-      // Actualizar vaso → disponible (o lavado si quieres flujo de lavandería)
+      // Obtener puntos actuales del titular para devolver en la respuesta
+      let puntos_nuevos = 0
+      if (titular_id) {
+        const titularSnap = await adminDb.collection('usuarios').doc(titular_id).get()
+        if (titularSnap.exists) puntos_nuevos = (titularSnap.data()!.puntos || 0) + 50
+      }
+
+      // Actualizar vaso → disponible
       batch.update(vasoRef, {
         estado: 'disponible',
         usuario_id: null,
@@ -124,29 +145,46 @@ export async function POST(req: NextRequest) {
         updated_at: now,
       })
 
-      // Devolver puntos al titular
+      // Devolver puntos + incrementar vasos_devueltos al titular
       if (titular_id) {
         batch.update(adminDb.collection('usuarios').doc(titular_id), {
-          puntos: FieldValue.increment(50)
+          puntos: FieldValue.increment(50),
+          vasos_devueltos: FieldValue.increment(1),
         })
       }
 
-      // Registrar evento
+      // Registrar evento con estacion_nombre del vaso
       const eventoRef = adminDb.collection('eventos').doc()
       batch.set(eventoRef, {
         tipo: 'devolucion',
         vaso_id,
-        vaso_codigo: vaso.codigo_qr,
-        usuario_id:    titular_id || null,
-        usuario_nombre:titular_nombre || null,
-        estacion_id,
-        estacion_nombre: null,
+        vaso_codigo:    vaso.codigo_qr,
+        usuario_id:     titular_id || null,
+        usuario_nombre: titular_nombre || null,
+        estacion_id:    vaso.estacion_id,
+        estacion_nombre:vaso.estacion_nombre,
         puntos_delta: 50,
         created_at: now,
       })
 
       await batch.commit()
-      return NextResponse.json({ ok: true })
+
+      // Enviar email de confirmación al titular
+      if (titular_id) {
+        const titularSnap2 = await adminDb.collection('usuarios').doc(titular_id).get()
+        const fechaStr = new Date().toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })
+        enviarEmailAccion({
+          to: 'jcarranzsualdea@gmail.com',
+          nombre: titular_nombre || 'Usuario',
+          accion: 'devolucion',
+          vaso_codigo: vaso.codigo_qr,
+          estacion_nombre: vaso.estacion_nombre,
+          puntos_restantes: puntos_nuevos,
+          fecha: fechaStr,
+        })
+      }
+
+      return NextResponse.json({ ok: true, puntos_nuevos })
     }
 
     // ── MARCAR LAVADO ─────────────────────────────────────────
@@ -171,6 +209,36 @@ export async function POST(req: NextRequest) {
         puntos_delta: 0,
         created_at: now,
       })
+
+      await batch.commit()
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── CAMBIAR ESTADO (gestora) ──────────────────────────────
+    if (accion === 'cambiar_estado') {
+      if (!['disponible', 'lavado', 'perdido'].includes(nuevo_estado)) {
+        return NextResponse.json({ error: 'Estado no válido' }, { status: 400 })
+      }
+      if (vaso.estado === 'en_uso') {
+        return NextResponse.json({ error: 'No se puede cambiar un vaso en uso' }, { status: 409 })
+      }
+
+      const updateData: any = { estado: nuevo_estado, updated_at: now }
+      if (vaso.estado === 'lavado' && nuevo_estado === 'disponible') {
+        updateData.lavados = FieldValue.increment(1)
+      }
+
+      batch.update(vasoRef, updateData)
+
+      if (nuevo_estado === 'disponible' && vaso.estado === 'lavado') {
+        const eventoRef = adminDb.collection('eventos').doc()
+        batch.set(eventoRef, {
+          tipo: 'lavado', vaso_id, vaso_codigo: vaso.codigo_qr,
+          usuario_id: null, usuario_nombre: null,
+          estacion_id: vaso.estacion_id, estacion_nombre: vaso.estacion_nombre,
+          puntos_delta: 0, created_at: now,
+        })
+      }
 
       await batch.commit()
       return NextResponse.json({ ok: true })

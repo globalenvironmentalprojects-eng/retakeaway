@@ -10,9 +10,11 @@ function Pill({ estado }: { estado: string }) {
 }
 
 export function GestoraView({ user }: { user: any; refreshUser?: () => void }) {
-  const [vasos, setVasos]     = useState<any[]>([])
-  const [filtro, setFiltro]   = useState('todos')
-  const [loading, setLoading] = useState(true)
+  const [vasos, setVasos]         = useState<any[]>([])
+  const [filtro, setFiltro]       = useState('todos')
+  const [loading, setLoading]     = useState(true)
+  const [updating, setUpdating]   = useState<string | null>(null) // vaso_id en proceso
+  const [selVaso, setSelVaso]     = useState<string | null>(null) // vaso expandido
 
   useEffect(() => { loadVasos() }, [])
 
@@ -21,6 +23,23 @@ export function GestoraView({ user }: { user: any; refreshUser?: () => void }) {
     const res = await fetch('/api/vasos')
     if (res.ok) { const d = await res.json(); setVasos(d.vasos || []) }
     setLoading(false)
+  }
+
+  const cambiarEstado = async (vasoId: string, nuevoEstado: string) => {
+    setUpdating(vasoId)
+    try {
+      const res = await fetch('/api/vasos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accion: 'cambiar_estado', vaso_id: vasoId, nuevo_estado: nuevoEstado })
+      })
+      if (res.ok) {
+        // Actualizar localmente sin recargar todo
+        setVasos(prev => prev.map(v => v.id === vasoId ? { ...v, estado: nuevoEstado, lavados: nuevoEstado === 'disponible' && v.estado === 'lavado' ? v.lavados + 1 : v.lavados } : v))
+        setSelVaso(null)
+      }
+    } catch { /* silencioso */ }
+    setUpdating(null)
   }
 
   const total       = vasos.length
@@ -110,19 +129,77 @@ export function GestoraView({ user }: { user: any; refreshUser?: () => void }) {
         {loading
           ? <p style={{ color: G.textMuted, textAlign: 'center', padding: 24 }}>⏳ Cargando vasos...</p>
           : filtered.map(v => (
-          <div key={v.id} style={{ background: G.surface, borderRadius: 14, padding: '14px 16px', border: `1px solid ${G.border}`, marginBottom: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7 }}>
-              <span style={{ color: G.text, fontWeight: 700, fontSize: 14 }}>{v.codigo_qr}</span>
-              <Pill estado={v.estado} />
+          <div key={v.id} style={{ background: G.surface, borderRadius: 14, border: `1.5px solid ${selVaso === v.id ? G.brand : G.border}`, marginBottom: 8, overflow: 'hidden', transition: 'border-color 0.2s' }}>
+            {/* Cabecera del vaso — clic para expandir */}
+            <div onClick={() => setSelVaso(selVaso === v.id ? null : v.id)} style={{ padding: '14px 16px', cursor: 'pointer' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7 }}>
+                <span style={{ color: G.text, fontWeight: 700, fontSize: 14 }}>{v.codigo_qr}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Pill estado={v.estado} />
+                  <span style={{ color: G.textMuted, fontSize: 14 }}>{selVaso === v.id ? '▲' : '▼'}</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: G.textMuted, fontSize: 12 }}>📍 {v.estacion_nombre}</span>
+                <span style={{ color: G.brand, fontSize: 12, fontWeight: 600 }}>🔄 {v.lavados} ciclos</span>
+              </div>
+              {v.usuario_nombre && (
+                <div style={{ marginTop: 7, background: G.amberLight, borderRadius: 8, padding: '5px 10px', display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: G.textMuted, fontSize: 11 }}>Usuario actual</span>
+                  <span style={{ color: G.amber, fontSize: 11, fontWeight: 700 }}>{v.usuario_nombre}</span>
+                </div>
+              )}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: G.textMuted, fontSize: 12 }}>📍 {v.estacion_nombre}</span>
-              <span style={{ color: G.brand, fontSize: 12, fontWeight: 600 }}>🔄 {v.lavados} ciclos</span>
-            </div>
-            {v.usuario_nombre && (
-              <div style={{ marginTop: 7, background: G.amberLight, borderRadius: 8, padding: '5px 10px', display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: G.textMuted, fontSize: 11 }}>Usuario actual</span>
-                <span style={{ color: G.amber, fontSize: 11, fontWeight: 700 }}>{v.usuario_nombre}</span>
+
+            {/* Panel expandible con acciones */}
+            {selVaso === v.id && (
+              <div style={{ borderTop: `1px solid ${G.border}`, padding: '12px 16px', background: G.bg }}>
+                <p style={{ color: G.textMuted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, margin: '0 0 10px' }}>
+                  Cambiar estado
+                </p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {/* Botón disponible — aparece si está en lavado o perdido */}
+                  {v.estado !== 'disponible' && v.estado !== 'en_uso' && (
+                    <button
+                      onClick={() => cambiarEstado(v.id, 'disponible')}
+                      disabled={updating === v.id}
+                      style={{ background: G.greenLight, border: `1.5px solid ${G.brand}`, color: G.brand, padding: '8px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {updating === v.id ? '⏳' : '✅'} Marcar disponible
+                    </button>
+                  )}
+                  {/* Botón lavado — aparece si está disponible */}
+                  {v.estado === 'disponible' && (
+                    <button
+                      onClick={() => cambiarEstado(v.id, 'lavado')}
+                      disabled={updating === v.id}
+                      style={{ background: G.blueLight, border: `1.5px solid ${G.blue}`, color: G.blue, padding: '8px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {updating === v.id ? '⏳' : '🧼'} Enviar a lavado
+                    </button>
+                  )}
+                  {/* Botón perdido — siempre disponible si no está en uso */}
+                  {v.estado !== 'en_uso' && v.estado !== 'perdido' && (
+                    <button
+                      onClick={() => cambiarEstado(v.id, 'perdido')}
+                      disabled={updating === v.id}
+                      style={{ background: G.redLight, border: `1.5px solid ${G.red}`, color: G.red, padding: '8px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {updating === v.id ? '⏳' : '❌'} Marcar perdido
+                    </button>
+                  )}
+                  {/* Botón recuperado — si está perdido */}
+                  {v.estado === 'perdido' && (
+                    <button
+                      onClick={() => cambiarEstado(v.id, 'disponible')}
+                      disabled={updating === v.id}
+                      style={{ background: G.greenLight, border: `1.5px solid ${G.brand}`, color: G.brand, padding: '8px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                      {updating === v.id ? '⏳' : '♻️'} Recuperado
+                    </button>
+                  )}
+                  {v.estado === 'en_uso' && (
+                    <p style={{ color: G.textMuted, fontSize: 12, margin: 0, padding: '8px 0' }}>
+                      No se puede cambiar el estado — vaso en uso por {v.usuario_nombre}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </div>

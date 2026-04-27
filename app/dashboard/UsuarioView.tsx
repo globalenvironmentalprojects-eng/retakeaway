@@ -1,25 +1,29 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import RTALogo from '@/components/RTALogo'
 import QRScannerScreen from '@/components/QRScannerScreen'
 
 const G = { dark:'#1E4D35', brand:'#2E7D52', bright:'#3A9E65', pale:'#A8D8BB', bg:'#F2F7F4', bgDeep:'#E6F0EB', surface:'#FFFFFF', border:'#C8E0D2', text:'#1A2E22', textMid:'#3D5A48', textMuted:'#7A9E8A', amber:'#D4860A', amberLight:'#FEF6E4', red:'#C0392B', redLight:'#FDECEA', greenLight:'#E6F5EE' }
 
-type Step = 'home' | 'scan' | 'confirm' | 'ok_recogida' | 'ok_devolucion'
+type Step = 'home' | 'scan_recoger' | 'scan_devolver' | 'confirm_recoger' | 'confirm_devolver' | 'ok_recogida' | 'ok_devolucion'
 
 export default function UsuarioView({ user, refreshUser }: { user: any; refreshUser: () => void }) {
-  const [step, setStep]       = useState<Step>('home')
-  const [scanMode, setScanMode] = useState<'recoger'|'devolver'>('recoger')
-  const [qrInput, setQrInput] = useState('')
-  const [vaso, setVaso]       = useState<any>(null)
+  const [step, setStep]           = useState<Step>('home')
+  const [vaso, setVaso]           = useState<any>(null)
+  const [vasoDevolver, setVasoDevolver] = useState<any>(null) // vaso activo que se va a devolver
   const [vasosActivos, setVasosActivos] = useState<any[]>([])
-  const [historial, setHistorial]       = useState<any[]>([])
-  const [loadingVaso, setLoadingVaso]   = useState(false)
-  const [error, setError]     = useState('')
+  const [historial, setHistorial] = useState<any[]>([])
+  const [loadingVaso, setLoadingVaso] = useState(false)
+  const [error, setError]         = useState('')
   const [confirming, setConfirming] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [puntosLocales, setPuntosLocales] = useState<number>(user.puntos || 0)
+  const [vasosDevueltos, setVasosDevueltos] = useState<number>(user.vasos_devueltos || 0)
 
-  // Cargar vasos en uso del usuario y su historial
+  useEffect(() => {
+    setPuntosLocales(user.puntos || 0)
+    setVasosDevueltos(user.vasos_devueltos || 0)
+  }, [user.puntos, user.vasos_devueltos])
+
   useEffect(() => {
     loadVasosActivos()
     loadHistorial()
@@ -41,24 +45,6 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
     }
   }
 
-  // Buscar vaso por código QR
-  const buscarVaso = async () => {
-    if (!qrInput.trim()) return
-    setLoadingVaso(true)
-    setError('')
-    try {
-      const res = await fetch(`/api/vasos?qr=${qrInput.trim().toUpperCase()}`)
-      if (!res.ok) { setError('Vaso no encontrado'); return }
-      const data = await res.json()
-      setVaso(data.vaso)
-      setStep('confirm')
-    } catch {
-      setError('Error de conexión')
-    } finally {
-      setLoadingVaso(false)
-    }
-  }
-
   // Confirmar recogida
   const confirmarRecogida = async () => {
     setConfirming(true)
@@ -71,6 +57,8 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error); return }
+      // Actualizar puntos localmente de inmediato
+      setPuntosLocales(data.puntos_nuevos ?? puntosLocales - 50)
       await refreshUser()
       await loadVasosActivos()
       await loadHistorial()
@@ -82,16 +70,22 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
     }
   }
 
-  // Confirmar devolución
-  const confirmarDevolucion = async (vasoId: string) => {
+  // Confirmar devolución — requiere escaneo del QR del vaso
+  const confirmarDevolucion = async () => {
+    if (!vasoDevolver) return
     setConfirming(true)
+    setError('')
     try {
       const res = await fetch('/api/vasos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accion: 'devolver', vaso_id: vasoId, estacion_id: user.estacion_id })
+        body: JSON.stringify({ accion: 'devolver', vaso_id: vasoDevolver.id })
       })
-      if (!res.ok) { const d = await res.json(); setError(d.error); return }
+      const data = await res.json()
+      if (!res.ok) { setError(data.error); return }
+      // Actualizar puntos y contador localmente de inmediato
+      setPuntosLocales(data.puntos_nuevos ?? puntosLocales + 50)
+      setVasosDevueltos(v => v + 1)
       await refreshUser()
       await loadVasosActivos()
       await loadHistorial()
@@ -113,10 +107,10 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
     return `${d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} · ${h}`
   }
 
-  // ── SCANNER (cámara real + manual) ───────────────────────
-  if (step === 'scan') return (
+  // ── SCANNER RECOGER ───────────────────────────────────────
+  if (step === 'scan_recoger') return (
     <QRScannerScreen
-      modo={scanMode}
+      modo="recoger"
       onCancel={() => { setStep('home'); setError('') }}
       onResult={async (codigo) => {
         setLoadingVaso(true)
@@ -125,8 +119,9 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
           const res = await fetch(`/api/vasos?qr=${codigo.trim().toUpperCase()}`)
           if (!res.ok) { setError('Vaso no encontrado'); setLoadingVaso(false); return }
           const data = await res.json()
+          if (data.vaso.estado !== 'disponible') { setError('Este vaso no está disponible'); setLoadingVaso(false); return }
           setVaso(data.vaso)
-          setStep('confirm')
+          setStep('confirm_recoger')
         } catch {
           setError('Error de conexión')
         } finally {
@@ -138,16 +133,46 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
     />
   )
 
-  // ── CONFIRM SHEET ─────────────────────────────────────────
-  if (step === 'confirm' && vaso) return (
+  // ── SCANNER DEVOLVER — confirma que el vaso escaneado es el correcto ──
+  if (step === 'scan_devolver') return (
+    <QRScannerScreen
+      modo="devolver"
+      onCancel={() => { setStep('home'); setError(''); setVasoDevolver(null) }}
+      onResult={async (codigo) => {
+        setLoadingVaso(true)
+        setError('')
+        try {
+          const res = await fetch(`/api/vasos?qr=${codigo.trim().toUpperCase()}`)
+          if (!res.ok) { setError('Vaso no encontrado'); setLoadingVaso(false); return }
+          const data = await res.json()
+          const vasoEscaneado = data.vaso
+          // Verificar que este vaso pertenece al usuario
+          if (vasoEscaneado.usuario_id !== user.id) {
+            setError('Este vaso no está registrado a tu nombre')
+            setLoadingVaso(false)
+            return
+          }
+          setVasoDevolver(vasoEscaneado)
+          setStep('confirm_devolver')
+        } catch {
+          setError('Error de conexión')
+        } finally {
+          setLoadingVaso(false)
+        }
+      }}
+      loading={loadingVaso}
+      error={error}
+    />
+  )
+
+  // ── CONFIRM RECOGER ───────────────────────────────────────
+  if (step === 'confirm_recoger' && vaso) return (
     <div style={{ background: G.bg, minHeight: '80vh' }}>
-      {/* Header verde */}
       <div style={{ background: `linear-gradient(150deg, ${G.dark}, ${G.brand})`, padding: '28px 20px 32px' }}>
         <h2 style={{ color: 'white', fontWeight: 900, fontSize: 22, margin: 0 }}>Confirmar recogida</h2>
         <p style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, marginTop: 4 }}>Revisa los detalles del vaso</p>
       </div>
       <div style={{ padding: '20px 16px' }}>
-        {/* Info vaso */}
         <div style={{ background: G.surface, borderRadius: 16, padding: 18, border: `1px solid ${G.border}`, marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
             <div style={{ width: 52, height: 52, background: G.dark, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -158,14 +183,13 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
               <div style={{ color: G.textMuted, fontSize: 13 }}>{vaso.estacion_nombre}</div>
             </div>
           </div>
-          {[['Estado', vaso.estado === 'disponible' ? '✅ Disponible' : '❌ No disponible'],['Ciclos de lavado', `${vaso.lavados} completados`]].map(([k,v]) => (
+          {[['Estado', '✅ Disponible'], ['Ciclos de lavado', `${vaso.lavados} completados`]].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderTop: `1px solid ${G.border}` }}>
               <span style={{ color: G.textMuted, fontSize: 13 }}>{k}</span>
               <span style={{ color: G.text, fontSize: 13, fontWeight: 700 }}>{v}</span>
             </div>
           ))}
         </div>
-        {/* Aviso puntos */}
         <div style={{ background: G.amberLight, border: `1px solid ${G.amber}40`, borderRadius: 12, padding: '12px 16px', marginBottom: 20, display: 'flex', gap: 12 }}>
           <span style={{ fontSize: 20 }}>🔒</span>
           <div>
@@ -175,9 +199,46 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
         </div>
         {error && <p style={{ color: G.red, fontSize: 13, marginBottom: 12, fontWeight: 600 }}>⚠ {error}</p>}
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => { setStep('home'); setVaso(null); setQrInput('') }} style={{ flex: 1, background: 'transparent', border: `1.5px solid ${G.border}`, color: G.textMid, padding: 14, borderRadius: 12, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>Cancelar</button>
-          <button onClick={confirmarRecogida} disabled={confirming || vaso.estado !== 'disponible'} style={{ flex: 2, background: G.brand, border: 'none', color: 'white', padding: 14, borderRadius: 12, cursor: 'pointer', fontSize: 15, fontWeight: 800, opacity: confirming ? 0.7 : 1, boxShadow: '0 4px 14px rgba(46,125,82,0.4)' }}>
+          <button onClick={() => { setStep('home'); setVaso(null) }} style={{ flex: 1, background: 'transparent', border: `1.5px solid ${G.border}`, color: G.textMid, padding: 14, borderRadius: 12, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>Cancelar</button>
+          <button onClick={confirmarRecogida} disabled={confirming} style={{ flex: 2, background: G.brand, border: 'none', color: 'white', padding: 14, borderRadius: 12, cursor: 'pointer', fontSize: 15, fontWeight: 800, opacity: confirming ? 0.7 : 1, boxShadow: '0 4px 14px rgba(46,125,82,0.4)' }}>
             {confirming ? '⏳ Procesando...' : 'CONFIRMAR RECOGIDA'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  // ── CONFIRM DEVOLVER ──────────────────────────────────────
+  if (step === 'confirm_devolver' && vasoDevolver) return (
+    <div style={{ background: G.bg, minHeight: '80vh' }}>
+      <div style={{ background: `linear-gradient(150deg, ${G.brand}, ${G.bright})`, padding: '28px 20px 32px' }}>
+        <h2 style={{ color: 'white', fontWeight: 900, fontSize: 22, margin: 0 }}>Confirmar devolución</h2>
+        <p style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, marginTop: 4 }}>QR verificado correctamente ✓</p>
+      </div>
+      <div style={{ padding: '20px 16px' }}>
+        <div style={{ background: G.surface, borderRadius: 16, padding: 18, border: `1px solid ${G.border}`, marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+            <div style={{ width: 52, height: 52, background: G.brand, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <RTALogo size={32} white />
+            </div>
+            <div>
+              <div style={{ color: G.text, fontWeight: 800, fontSize: 18 }}>{vasoDevolver.codigo_qr}</div>
+              <div style={{ color: G.textMuted, fontSize: 13 }}>{vasoDevolver.estacion_nombre}</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ background: G.greenLight, border: `1px solid ${G.brand}40`, borderRadius: 12, padding: '12px 16px', marginBottom: 20, display: 'flex', gap: 12 }}>
+          <span style={{ fontSize: 20 }}>🔓</span>
+          <div>
+            <div style={{ color: G.text, fontSize: 13, fontWeight: 700 }}>Se liberarán 50 puntos</div>
+            <div style={{ color: G.textMuted, fontSize: 12 }}>Gracias por devolver el vaso 🌍</div>
+          </div>
+        </div>
+        {error && <p style={{ color: G.red, fontSize: 13, marginBottom: 12, fontWeight: 600 }}>⚠ {error}</p>}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={() => { setStep('home'); setVasoDevolver(null) }} style={{ flex: 1, background: 'transparent', border: `1.5px solid ${G.border}`, color: G.textMid, padding: 14, borderRadius: 12, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>Cancelar</button>
+          <button onClick={confirmarDevolucion} disabled={confirming} style={{ flex: 2, background: G.brand, border: 'none', color: 'white', padding: 14, borderRadius: 12, cursor: 'pointer', fontSize: 15, fontWeight: 800, opacity: confirming ? 0.7 : 1, boxShadow: '0 4px 14px rgba(46,125,82,0.4)' }}>
+            {confirming ? '⏳ Procesando...' : 'CONFIRMAR DEVOLUCIÓN'}
           </button>
         </div>
       </div>
@@ -196,7 +257,7 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
       </p>
       <div style={{ background: 'rgba(255,255,255,0.15)', borderRadius: 14, padding: '14px 28px', display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontSize: 20 }}>⭐</span>
-        <span style={{ color: 'white', fontSize: 22, fontWeight: 900 }}>{user.puntos?.toLocaleString('es-ES')} pts</span>
+        <span style={{ color: 'white', fontSize: 22, fontWeight: 900 }}>{puntosLocales.toLocaleString('es-ES')} pts</span>
       </div>
       <button onClick={() => setStep('home')} style={{ marginTop: 30, background: 'rgba(255,255,255,0.18)', border: '2px solid rgba(255,255,255,0.35)', color: 'white', padding: '14px 48px', borderRadius: 14, cursor: 'pointer', fontSize: 15, fontWeight: 700 }}>Continuar</button>
     </div>
@@ -210,7 +271,7 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
         <div style={{ position: 'absolute', top: -50, right: -50, width: 180, height: 180, borderRadius: '50%', background: 'rgba(107,191,142,0.08)' }} />
         <p style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, margin: 0 }}>Hola, {user.nombre.split(' ')[0]} 👋</p>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 16 }}>
-          <span style={{ color: 'white', fontSize: 52, fontWeight: 900, lineHeight: 1 }}>{(user.puntos || 0).toLocaleString('es-ES')}</span>
+          <span style={{ color: 'white', fontSize: 52, fontWeight: 900, lineHeight: 1 }}>{puntosLocales.toLocaleString('es-ES')}</span>
           <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 18 }}>pts</span>
         </div>
         {vasosActivos.length > 0 && (
@@ -221,29 +282,27 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
         )}
         <div style={{ marginTop: 18, background: 'rgba(255,255,255,0.10)', borderRadius: 12, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span>🌿</span>
-          <span style={{ color: 'white', fontSize: 13, fontWeight: 700 }}>
-            {historial.filter(e => e.tipo === 'devolucion').length} vasos devueltos
-          </span>
+          <span style={{ color: 'white', fontSize: 13, fontWeight: 700 }}>{vasosDevueltos} vasos devueltos</span>
           <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11 }}>· contribuyes al planeta</span>
         </div>
       </div>
 
       <div style={{ padding: '20px 16px' }}>
-        {/* CTAs */}
-        <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
-          <button onClick={() => { setScanMode('recoger'); setStep('scan'); setQrInput(''); setError('') }} style={{ flex: 1, background: `linear-gradient(135deg, ${G.dark}, ${G.brand})`, color: 'white', border: 'none', borderRadius: 16, padding: '16px 12px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, boxShadow: '0 4px 18px rgba(30,77,53,0.40)' }}>
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="3" height="3"/><rect x="18" y="14" width="3" height="3"/><rect x="14" y="18" width="3" height="3"/><rect x="18" y="18" width="3" height="3"/></svg>
-            <span style={{ fontWeight: 800, fontSize: 14 }}>COGER VASO</span>
-            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}>−50 pts bloqueados</span>
-          </button>
-          <button onClick={() => { setScanMode('devolver'); setStep('scan'); setQrInput(''); setError('') }} style={{ flex: 1, background: G.surface, color: G.dark, border: `2px solid ${G.brand}`, borderRadius: 16, padding: '16px 12px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={G.brand} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 19H4.8a1.8 1.8 0 0 1-1.57-.88 1.78 1.78 0 0 1 0-1.78L7.2 9.5"/><path d="M11 19h8.2a1.8 1.8 0 0 0 1.56-.89 1.78 1.78 0 0 0 0-1.77l-1.23-2.12"/><path d="m14 16-3 3 3 3"/><path d="M8.3 13.6 7.2 9.5 3.1 10.6"/><path d="m9.34 5.81 1.1-1.89A1.83 1.83 0 0 1 12 3a1.78 1.78 0 0 1 1.55.89l3.94 6.84"/><path d="m13.38 9.63 4.1 1.1 1.09-4.1"/></svg>
-            <span style={{ fontWeight: 800, fontSize: 14 }}>DEVOLVER</span>
-            <span style={{ fontSize: 10, color: G.textMuted }}>+50 pts recuperados</span>
-          </button>
-        </div>
+        {/* Solo botón COGER VASO */}
+        <button onClick={() => { setStep('scan_recoger'); setError('') }} style={{
+          width: '100%', background: `linear-gradient(135deg, ${G.dark}, ${G.brand})`, color: 'white',
+          border: 'none', borderRadius: 16, padding: '18px 12px', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+          boxShadow: '0 4px 18px rgba(30,77,53,0.40)', marginBottom: 24
+        }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="3" height="3"/><rect x="18" y="14" width="3" height="3"/><rect x="14" y="18" width="3" height="3"/><rect x="18" y="18" width="3" height="3"/></svg>
+          <div style={{ textAlign: 'left' }}>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>COGER VASO</div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>Escanea el QR del vaso · −50 pts bloqueados</div>
+          </div>
+        </button>
 
-        {/* Vasos activos */}
+        {/* Vasos activos con botón devolver inline */}
         {vasosActivos.length > 0 && (
           <div style={{ marginBottom: 20 }}>
             <h3 style={{ color: G.text, fontSize: 14, fontWeight: 800, margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -251,17 +310,25 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
               Vasos en tu poder ({vasosActivos.length})
             </h3>
             {vasosActivos.map((v: any) => (
-              <div key={v.id} style={{ background: G.surface, borderRadius: 14, padding: '14px 16px', border: `1px solid ${G.amberLight}`, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ color: G.text, fontWeight: 700 }}>{v.codigo_qr}</div>
-                  <div style={{ color: G.textMuted, fontSize: 12 }}>{v.estacion_nombre}</div>
+              <div key={v.id} style={{ background: G.surface, borderRadius: 14, padding: '14px 16px', border: `1px solid ${G.amberLight}`, marginBottom: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ color: G.text, fontWeight: 700, fontSize: 15 }}>{v.codigo_qr}</div>
+                    <div style={{ color: G.textMuted, fontSize: 12, marginTop: 2 }}>{v.estacion_nombre}</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ color: G.amber, fontWeight: 800, fontSize: 13 }}>−50 pts 🔒</div>
+                  </div>
                 </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ color: G.amber, fontWeight: 800 }}>−50 pts 🔒</div>
-                  <button onClick={() => confirmarDevolucion(v.id)} disabled={confirming} style={{ marginTop: 4, background: G.brand, border: 'none', color: 'white', padding: '5px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
-                    Devolver
-                  </button>
-                </div>
+                {/* Botón devolver que abre el escáner QR */}
+                <button onClick={() => { setVasoDevolver(v); setStep('scan_devolver'); setError('') }} style={{
+                  width: '100%', background: G.brand, border: 'none', color: 'white',
+                  padding: '10px', borderRadius: 10, cursor: 'pointer', fontSize: 13,
+                  fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="3" height="3"/><rect x="18" y="14" width="3" height="3"/><rect x="14" y="18" width="3" height="3"/><rect x="18" y="18" width="3" height="3"/></svg>
+                  Escanear QR para devolver · +50 pts
+                </button>
               </div>
             ))}
           </div>
@@ -274,7 +341,7 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
           : historial.map((ev: any) => (
           <div key={ev.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: `1px solid ${G.border}` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 10, background: ev.tipo === 'devolucion' ? G.greenLight : G.redLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+              <div style={{ width: 38, height: 38, borderRadius: 10, background: ev.tipo === 'devolucion' ? G.greenLight : G.amberLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
                 {ev.tipo === 'devolucion' ? '♻️' : ev.tipo === 'recogida' ? '🥤' : '🧼'}
               </div>
               <div>
@@ -285,7 +352,7 @@ export default function UsuarioView({ user, refreshUser }: { user: any; refreshU
               </div>
             </div>
             {ev.puntos_delta !== 0 && (
-              <span style={{ color: ev.puntos_delta > 0 ? G.brand : G.red, fontWeight: 800, fontSize: 14 }}>
+              <span style={{ color: ev.puntos_delta > 0 ? G.brand : G.amber, fontWeight: 800, fontSize: 14 }}>
                 {ev.puntos_delta > 0 ? '+' : ''}{ev.puntos_delta} pts
               </span>
             )}
