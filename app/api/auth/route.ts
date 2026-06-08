@@ -37,4 +37,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Error del servidor' }, { status: 500 })
   }
   
+
 }
