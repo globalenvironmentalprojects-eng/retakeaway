@@ -3,35 +3,36 @@ import { adminDb } from '@/lib/firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
 import { enviarEmailAccion } from '@/lib/email'
 
-// GET /api/vasos?estacion_id=xxx  → listar vasos de una estación
-// GET /api/vasos?qr=RTA-001       → buscar vaso por código QR
+// Nombre de ubicación que aparece en todos los eventos nuevos
+const UBICACION = 'Ecoembes'
+
+// GET /api/vasos?estacion_id=xxx  → vasos de una estación
+// GET /api/vasos?usuario_id=xxx   → vasos de un usuario
+// GET /api/vasos?qr=RTA-001       → vaso por QR
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const estacionId = searchParams.get('estacion_id')
+  const usuarioId  = searchParams.get('usuario_id')
   const qr         = searchParams.get('qr')
 
   try {
     if (qr) {
-      const snap = await adminDb
-        .collection('vasos')
-        .where('codigo_qr', '==', qr.trim().toUpperCase())
-        .limit(1)
-        .get()
+      const snap = await adminDb.collection('vasos').where('codigo_qr', '==', qr.trim().toUpperCase()).limit(1).get()
       if (snap.empty) return NextResponse.json({ error: 'Vaso no encontrado' }, { status: 404 })
       const doc = snap.docs[0]
       return NextResponse.json({ vaso: { id: doc.id, ...doc.data() } })
     }
-
-    if (estacionId) {
-      const snap = await adminDb
-        .collection('vasos')
-        .where('estacion_id', '==', estacionId)
-        .get()
+    if (usuarioId) {
+      const snap = await adminDb.collection('vasos').where('usuario_id', '==', usuarioId).get()
       const vasos = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       return NextResponse.json({ vasos })
     }
-
-    // Sin filtro → todos (solo para gestora)
+    if (estacionId) {
+      const snap = await adminDb.collection('vasos').where('estacion_id', '==', estacionId).get()
+      const vasos = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      return NextResponse.json({ vasos })
+    }
+    // Sin filtro → todos (gestora)
     const snap = await adminDb.collection('vasos').get()
     const vasos = snap.docs.map(d => ({ id: d.id, ...d.data() }))
     return NextResponse.json({ vasos })
@@ -41,8 +42,6 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/vasos  body: { accion, vaso_id, usuario_id, estacion_id }
-// accion: 'recoger' | 'devolver' | 'marcar_lavado'
 export async function POST(req: NextRequest) {
   try {
     const { accion, vaso_id, usuario_id, estacion_id, nuevo_estado } = await req.json()
@@ -51,8 +50,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan campos requeridos' }, { status: 400 })
     }
 
-    const vasoRef    = adminDb.collection('vasos').doc(vaso_id)
-    const vasoSnap   = await vasoRef.get()
+    const vasoRef  = adminDb.collection('vasos').doc(vaso_id)
+    const vasoSnap = await vasoRef.get()
 
     if (!vasoSnap.exists) {
       return NextResponse.json({ error: 'Vaso no encontrado' }, { status: 404 })
@@ -68,7 +67,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `El vaso está ${vaso.estado}` }, { status: 409 })
       }
 
-      // Obtener datos del usuario
       const usuarioSnap = await adminDb.collection('usuarios').doc(usuario_id).get()
       if (!usuarioSnap.exists) return NextResponse.json({ error: 'Usuario no encontrado' }, { status: 404 })
       const usuario = usuarioSnap.data()!
@@ -77,7 +75,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Puntos insuficientes (necesitas al menos 50)' }, { status: 400 })
       }
 
-      // Actualizar vaso
       batch.update(vasoRef, {
         estado: 'en_uso',
         usuario_id,
@@ -85,35 +82,33 @@ export async function POST(req: NextRequest) {
         updated_at: now,
       })
 
-      // Descontar puntos al usuario
       batch.update(adminDb.collection('usuarios').doc(usuario_id), {
         puntos: FieldValue.increment(-50)
       })
 
-      // Registrar evento
       const eventoRef = adminDb.collection('eventos').doc()
       batch.set(eventoRef, {
         tipo: 'recogida',
         vaso_id,
-        vaso_codigo: vaso.codigo_qr,
+        vaso_codigo:    vaso.codigo_qr,
         usuario_id,
         usuario_nombre: usuario.nombre,
         estacion_id:    vaso.estacion_id,
-        estacion_nombre:vaso.estacion_nombre,
+        estacion_nombre: UBICACION,
         puntos_delta: -50,
         created_at: now,
       })
 
       await batch.commit()
 
-      // Enviar email de confirmación (sin await para no bloquear la respuesta)
+      // Email sin bloquear la respuesta
       const fechaStr = new Date().toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })
       enviarEmailAccion({
         to: 'jcarranzsualdea@gmail.com',
         nombre: usuario.nombre,
         accion: 'recogida',
         vaso_codigo: vaso.codigo_qr,
-        estacion_nombre: vaso.estacion_nombre,
+        estacion_nombre: UBICACION,
         puntos_restantes: usuario.puntos - 50,
         fecha: fechaStr,
       })
@@ -130,14 +125,12 @@ export async function POST(req: NextRequest) {
       const titular_id     = vaso.usuario_id
       const titular_nombre = vaso.usuario_nombre
 
-      // Obtener puntos actuales del titular para devolver en la respuesta
       let puntos_nuevos = 0
       if (titular_id) {
         const titularSnap = await adminDb.collection('usuarios').doc(titular_id).get()
         if (titularSnap.exists) puntos_nuevos = (titularSnap.data()!.puntos || 0) + 50
       }
 
-      // Actualizar vaso → disponible
       batch.update(vasoRef, {
         estado: 'disponible',
         usuario_id: null,
@@ -145,7 +138,6 @@ export async function POST(req: NextRequest) {
         updated_at: now,
       })
 
-      // Devolver puntos + incrementar vasos_devueltos al titular
       if (titular_id) {
         batch.update(adminDb.collection('usuarios').doc(titular_id), {
           puntos: FieldValue.increment(50),
@@ -153,7 +145,6 @@ export async function POST(req: NextRequest) {
         })
       }
 
-      // Registrar evento con estacion_nombre del vaso
       const eventoRef = adminDb.collection('eventos').doc()
       batch.set(eventoRef, {
         tipo: 'devolucion',
@@ -162,23 +153,21 @@ export async function POST(req: NextRequest) {
         usuario_id:     titular_id || null,
         usuario_nombre: titular_nombre || null,
         estacion_id:    vaso.estacion_id,
-        estacion_nombre:vaso.estacion_nombre,
+        estacion_nombre: UBICACION,
         puntos_delta: 50,
         created_at: now,
       })
 
       await batch.commit()
 
-      // Enviar email de confirmación al titular
       if (titular_id) {
-        const titularSnap2 = await adminDb.collection('usuarios').doc(titular_id).get()
         const fechaStr = new Date().toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })
         enviarEmailAccion({
           to: 'jcarranzsualdea@gmail.com',
           nombre: titular_nombre || 'Usuario',
           accion: 'devolucion',
           vaso_codigo: vaso.codigo_qr,
-          estacion_nombre: vaso.estacion_nombre,
+          estacion_nombre: UBICACION,
           puntos_restantes: puntos_nuevos,
           fecha: fechaStr,
         })
@@ -201,11 +190,11 @@ export async function POST(req: NextRequest) {
       batch.set(eventoRef, {
         tipo: 'lavado',
         vaso_id,
-        vaso_codigo: vaso.codigo_qr,
+        vaso_codigo:    vaso.codigo_qr,
         usuario_id: null,
         usuario_nombre: null,
         estacion_id,
-        estacion_nombre: null,
+        estacion_nombre: UBICACION,
         puntos_delta: 0,
         created_at: now,
       })
@@ -235,7 +224,7 @@ export async function POST(req: NextRequest) {
         batch.set(eventoRef, {
           tipo: 'lavado', vaso_id, vaso_codigo: vaso.codigo_qr,
           usuario_id: null, usuario_nombre: null,
-          estacion_id: vaso.estacion_id, estacion_nombre: vaso.estacion_nombre,
+          estacion_id: vaso.estacion_id, estacion_nombre: UBICACION,
           puntos_delta: 0, created_at: now,
         })
       }
