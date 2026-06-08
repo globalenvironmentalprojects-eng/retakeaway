@@ -73,12 +73,12 @@ export default function LoginPage() {
       <div style={{ background: G.surface, borderRadius: 24, padding: '28px 24px', width: '100%', maxWidth: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.25)', boxSizing: 'border-box' }}>
         <h2 style={{ color: G.text, margin: '0 0 20px', fontSize: 20, fontWeight: 800, fontFamily: "'Outfit', sans-serif" }}>Iniciar sesión</h2>
 
-        {/* Email */}
+        {/* Usuario */}
         <div style={{ marginBottom: 14 }}>
-          <label style={{ color: G.textMid, fontSize: 12, fontWeight: 700, display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>Email</label>
+          <label style={{ color: G.textMid, fontSize: 12, fontWeight: 700, display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>Usuario</label>
           <input
-            type="email" value={email} onChange={e => setEmail(e.target.value)}
-            placeholder="tu@email.com" autoComplete="email"
+            type="text" value={email} onChange={e => setEmail(e.target.value)}
+            placeholder="tu nombre de usuario" autoComplete="username"
             onKeyDown={e => e.key === 'Enter' && handleLogin()}
             style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: `1.5px solid ${G.border}`, fontSize: 15, outline: 'none', background: G.bg, color: G.text, boxSizing: 'border-box', fontFamily: "'Outfit', sans-serif" }}
           />

@@ -6,14 +6,26 @@ export async function POST(req: NextRequest) {
     const { email, password } = await req.json()
 
     if (!email || !password) {
-      return NextResponse.json({ error: 'Email y contraseña requeridos' }, { status: 400 })
+      return NextResponse.json({ error: 'Usuario y contraseña requeridos' }, { status: 400 })
     }
 
-    const snap = await adminDb
+    const loginInput = email.trim() // Respeta mayúsculas, ñ, espacios
+
+    // Buscar por campo "login" (exacto, tal como se escribió)
+    let snap = await adminDb
       .collection('usuarios')
-      .where('email', '==', email.toLowerCase().trim())
+      .where('login', '==', loginInput)
       .limit(1)
       .get()
+
+    // Fallback: buscar por email (compatibilidad con usuarios demo)
+    if (snap.empty) {
+      snap = await adminDb
+        .collection('usuarios')
+        .where('email', '==', loginInput.toLowerCase())
+        .limit(1)
+        .get()
+    }
 
     if (snap.empty) {
       return NextResponse.json({ error: 'Usuario no encontrado' }, { status: 401 })
@@ -28,7 +40,6 @@ export async function POST(req: NextRequest) {
     }
 
     const { password: _pw, ...safeUser } = user
-
     return NextResponse.json({ user: safeUser })
   } catch (err) {
     console.error('[auth/login]', err)
