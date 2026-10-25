@@ -4,7 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { enviarEmailAccion } from '@/lib/email'
 
 // Nombre de ubicación que aparece en todos los eventos nuevos
-const UBICACION = 'Ecoembes'
+const UBICACION = 'Espacio Ventas (C/ Alcalá 182)'
 
 // GET /api/vasos?estacion_id=xxx  → vasos de una estación
 // GET /api/vasos?usuario_id=xxx   → vasos de un usuario
