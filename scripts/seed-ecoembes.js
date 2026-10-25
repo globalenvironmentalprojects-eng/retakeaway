@@ -1,17 +1,26 @@
-/**
- * Crea 30 usuarios 1@ecoembes.com ... 30@ecoembes.com
- * con historial de recogida/devolución variado
- * Ejecutar:
- *   set GOOGLE_APPLICATION_CREDENTIALS=./serviceAccount.json
- *   node scripts/seed-ecoembes.js
- */
 const admin = require('firebase-admin')
 if (!admin.apps.length) {
   admin.initializeApp({ credential: admin.credential.applicationDefault() })
 }
 const db = admin.firestore()
 
-const UBICACION = 'Espacio Ventas (C/ Alcalá 182)'
+const ESTACIONES = [
+  'Repsol Valdebebas (Av. de los Andes, 4)',
+  'Cepsa Alcobendas (Av. de la Industria, 32)',
+  'BP Atocha (Paseo de la Infanta Isabel, 2)',
+  'Repsol Chamartín (C/ Agustín de Foxá, 29)',
+  'Shell Pozuelo (Ctra. de La Coruña, km 12)',
+  'Galp Getafe (Av. del Ejército, 14)',
+  'Repsol Las Rozas (Av. Europa, 3)',
+  'Cepsa Majadahonda (C/ Gavilanes, 1)',
+  'BP Barajas (Av. de Logroño, 110)',
+  'Repsol Alcorcón (Av. de Móstoles, 22)',
+  'Shell Leganés (Av. de la Hispanidad, 8)',
+  'Galp Torrejón (Av. de la Constitución, 55)',
+  'Repsol Hortaleza (C/ Arturo Soria, 340)',
+  'Cepsa Vallecas (Av. de la Albufera, 72)',
+  'BP Fuenlabrada (C/ de las Flores, 18)',
+]
 
 const VASOS = [
   { id: 'vaso-001', codigo_qr: 'RTA-001' },
@@ -24,15 +33,11 @@ const VASOS = [
   { id: 'vaso-008', codigo_qr: 'RTA-008' },
   { id: 'vaso-009', codigo_qr: 'RTA-009' },
   { id: 'vaso-010', codigo_qr: 'RTA-010' },
-  { id: 'vaso-015', codigo_qr: 'RTA-015' },
-  { id: 'vaso-020', codigo_qr: 'RTA-020' },
 ]
 
 const rand = (arr) => arr[Math.floor(Math.random() * arr.length)]
 const padH = (n) => n.toString().padStart(2, '0')
 const randHora = (base) => `${padH(base + Math.floor(Math.random() * 2))}:${padH(Math.floor(Math.random() * 60))}`
-
-// Número de usos por usuario (variado entre 2 y 18)
 const NUSOS = [4,7,2,11,5,9,3,14,6,8,2,10,5,7,3,12,4,6,9,2,8,3,11,5,7,13,4,6,2,10]
 
 function hace(dias, hora) {
@@ -44,20 +49,17 @@ function hace(dias, hora) {
 }
 
 async function seed() {
-  console.log('🌱 Creando 30 usuarios Ecoembes con historial...\n')
-
+  console.log('🌱 Creando 30 usuarios Ecoembes...\n')
   for (let i = 1; i <= 30; i++) {
-    const email = `${i}@ecoembes.com`
-    const login = `${i}`
-    const nombre = `Usuario ${i}`
     const id = `usr-ecoembes-${i}`
+    const nombre = `Usuario ${i}`
     const nusos = NUSOS[i - 1]
+    const estacionesFavoritas = [rand(ESTACIONES), rand(ESTACIONES)]
 
     await db.collection('usuarios').doc(id).set({
-      id,
-      nombre,
-      email,
-      login,
+      id, nombre,
+      email: `${i}@ecoembes.com`,
+      login: `${i}`,
       password: 'ecoembes',
       rol: 'usuario',
       puntos: 500,
@@ -66,45 +68,24 @@ async function seed() {
       created_at: new Date().toISOString()
     })
 
-    let devueltos = 0
     for (let j = 0; j < nusos; j++) {
       const diasAtras = Math.floor(Math.random() * 80) + 1
       const vaso = rand(VASOS)
-      const hRec = randHora(7 + Math.floor(Math.random() * 4))   // 7-10h recogida
-      const hDev = randHora(14 + Math.floor(Math.random() * 5))  // 14-18h devolución
+      const estacion = Math.random() < 0.7 ? rand(estacionesFavoritas) : rand(ESTACIONES)
+      const base = { vaso_id: vaso.id, vaso_codigo: vaso.codigo_qr,
+        usuario_id: id, usuario_nombre: nombre,
+        estacion_id: 'est-001', estacion_nombre: estacion }
 
-      await db.collection('eventos').add({
-        tipo: 'recogida',
-        vaso_id: vaso.id,
-        vaso_codigo: vaso.codigo_qr,
-        usuario_id: id,
-        usuario_nombre: nombre,
-        estacion_id: 'est-001',
-        estacion_nombre: UBICACION,
-        puntos_delta: -50,
-        created_at: hace(diasAtras, hRec)
-      })
-
-      await db.collection('eventos').add({
-        tipo: 'devolucion',
-        vaso_id: vaso.id,
-        vaso_codigo: vaso.codigo_qr,
-        usuario_id: id,
-        usuario_nombre: nombre,
-        estacion_id: 'est-001',
-        estacion_nombre: UBICACION,
-        puntos_delta: 50,
-        created_at: hace(diasAtras, hDev)
-      })
-
-      devueltos++
+      await db.collection('eventos').add({ ...base, tipo: 'recogida',
+        puntos_delta: -50, created_at: hace(diasAtras, randHora(7 + Math.floor(Math.random() * 4))) })
+      await db.collection('eventos').add({ ...base, tipo: 'devolucion',
+        puntos_delta: 50,  created_at: hace(diasAtras, randHora(14 + Math.floor(Math.random() * 5))) })
     }
 
-    await db.collection('usuarios').doc(id).update({ vasos_devueltos: devueltos })
-    console.log(`  ✓ ${email}  —  ${nusos} usos`)
+    await db.collection('usuarios').doc(id).update({ vasos_devueltos: nusos })
+    console.log(`  ✓ ${i}@ecoembes.com — ${nusos} usos`)
   }
-
-  console.log('\n✅ 30 usuarios Ecoembes creados con historial.')
+  console.log('\n✅ Hecho.')
   process.exit(0)
 }
 
